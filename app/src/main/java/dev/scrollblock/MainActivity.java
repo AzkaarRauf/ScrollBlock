@@ -90,29 +90,6 @@ public final class MainActivity extends Activity {
         targetsBox.setOrientation(LinearLayout.VERTICAL);
         root.addView(targetsBox);
 
-        header(root, "Free swipes before blocking");
-        final TextView swipeLabel = text(root, "", 14, false);
-        SeekBar seek = new SeekBar(this);
-        seek.setMax(20);
-        seek.setProgress(prefs.getInt(Prefs.FREE_SWIPES, 0));
-        swipeLabel.setText(swipeText(seek.getProgress()));
-        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int v, boolean user) {
-                swipeLabel.setText(swipeText(v));
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar s) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar s) {
-                prefs.edit().putInt(Prefs.FREE_SWIPES, s.getProgress()).apply();
-            }
-        });
-        root.addView(seek);
-
         header(root, "When blocked");
         RadioGroup action = new RadioGroup(this);
         final RadioButton back = new RadioButton(this);
@@ -209,6 +186,8 @@ public final class MainActivity extends Activity {
             boolean hasWeb = false;
             for (String[] u : rules.urls) hasWeb |= u[0].equals(key);
 
+            final String target = key;
+            final String title = rules.targets.get(key);
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -219,7 +198,109 @@ public final class MainActivity extends Activity {
             if (hasApp) check(row, "App", Prefs.appKey(key), true);
             if (hasWeb) check(row, "Browser", Prefs.webKey(key), true);
             targetsBox.addView(row);
+
+            TextView limit = new TextView(this);
+            limit.setText("Limit: " + Prefs.limitSummary(Prefs.reels(prefs, key), Prefs.waitSeconds(prefs, key)) + "  ›");
+            limit.setTextSize(14);
+            limit.setTextColor(0xFF1565C0);
+            limit.setPadding(0, dp(2), 0, dp(12));
+            limit.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    editLimit(target, title);
+                }
+            });
+            targetsBox.addView(limit);
         }
+    }
+
+    private void editLimit(final String target, String title) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(20);
+        box.setPadding(pad, dp(8), pad, 0);
+
+        final TextView explain = text(box, "", 14, false);
+        final TextView reelsLabel = text(box, "", 15, true);
+        final SeekBar reels = new SeekBar(this);
+        reels.setMax(Prefs.MAX_REELS);
+        box.addView(reels);
+        final TextView waitLabel = text(box, "", 15, true);
+        final SeekBar wait = new SeekBar(this);
+        wait.setMax(Prefs.WAIT_STEPS.length - 1);
+        box.addView(wait);
+
+        final Runnable update = new Runnable() {
+            @Override
+            public void run() {
+                int r = reels.getProgress();
+                int w = Prefs.WAIT_STEPS[wait.getProgress()];
+                reelsLabel.setText("Reels per visit: " + (r == 0 ? "none (block on open)" : r));
+                waitLabel.setText("Wait after a visit: " + (w == 0 ? "none" : Prefs.duration(w)));
+                wait.setEnabled(r > 0);
+                waitLabel.setEnabled(r > 0);
+                explain.setText(limitExplanation(r, r == 0 ? 0 : w));
+            }
+        };
+        SeekBar.OnSeekBarChangeListener l = new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int v, boolean user) {
+                update.run();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+            }
+        };
+        reels.setOnSeekBarChangeListener(l);
+        wait.setOnSeekBarChangeListener(l);
+        reels.setProgress(Prefs.reels(prefs, target));
+        wait.setProgress(waitStep(Prefs.waitSeconds(prefs, target)));
+        update.run();
+
+        text(box, "Presets", 13, true).setPadding(0, dp(12), 0, 0);
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        box.addView(presets);
+        preset(presets, "Block", reels, wait, 0, 0);
+        preset(presets, "1 reel / 1 min", reels, wait, 1, 60);
+        preset(presets, "3 reels / 10 min", reels, wait, 3, 600);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(sv)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        int r = reels.getProgress();
+                        Prefs.setLimit(prefs, target, r, r == 0 ? 0 : Prefs.WAIT_STEPS[wait.getProgress()]);
+                        buildTargets();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void preset(ViewGroup parent, String label, final SeekBar reels, final SeekBar wait,
+                        final int r, final int w) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(12);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                reels.setProgress(r);
+                wait.setProgress(waitStep(w));
+            }
+        });
+        parent.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
     }
 
     private void editRules() {
@@ -325,9 +406,21 @@ public final class MainActivity extends Activity {
         return false;
     }
 
-    private static String swipeText(int n) {
-        return n == 0 ? "None – block as soon as a feed opens"
-                : n + " swipe" + (n == 1 ? "" : "s") + ", then block";
+    private static String limitExplanation(int reels, int wait) {
+        if (reels == 0) return "Blocked as soon as it opens, in the app and in browsers.";
+        String watch = reels == 1 ? "Watch 1 reel as long as you like. Swiping to another one blocks it."
+                : "Watch up to " + reels + " reels per visit. Swiping past the last one blocks it.";
+        if (wait == 0) return watch + " Leaving and coming back starts a fresh visit.";
+        return watch + " When a visit ends (blocked, or you leave), new reels stay blocked for "
+                + Prefs.duration(wait) + ". The wait applies in browsers too.";
+    }
+
+    private static int waitStep(int seconds) {
+        int best = 0;
+        for (int i = 0; i < Prefs.WAIT_STEPS.length; i++) {
+            if (Math.abs(Prefs.WAIT_STEPS[i] - seconds) < Math.abs(Prefs.WAIT_STEPS[best] - seconds)) best = i;
+        }
+        return best;
     }
 
     private static String join(java.util.List<String> lines) {

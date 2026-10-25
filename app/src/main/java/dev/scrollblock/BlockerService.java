@@ -26,6 +26,10 @@ import java.util.List;
  * CHECK_INTERVAL_MS per app, with a trailing check so the final state of a
  * burst is never missed. The queries themselves (findByViewId) execute inside
  * the target app's process; we only receive the few matching nodes.
+ *
+ * Limits: each feed allows N reels per visit, then stays blocked for a wait
+ * time that starts when the visit ends (blocked or left). Waits are kept per
+ * feed, so they apply in the app and in browsers alike.
  */
 public final class BlockerService extends AccessibilityService
         implements SharedPreferences.OnSharedPreferenceChangeListener {
@@ -35,6 +39,12 @@ public final class BlockerService extends AccessibilityService
     private static final long SWIPE_GAP_MS = 700;
     /** After a block, landing on the same feed again within this window blocks at once. */
     private static final long REBLOCK_WINDOW_MS = 4000;
+    /**
+     * A visit ends once the feed has been seen off screen for this long (or
+     * another watched app comes up). A single miss is ignored, since screens
+     * can briefly lack the matched view mid-transition.
+     */
+    private static final long VISIT_END_MS = 1000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -45,7 +55,8 @@ public final class BlockerService extends AccessibilityService
     private final HashMap<String, Rules.AppRule[]> appRules = new HashMap<>();
     private final HashMap<String, String> browserBars = new HashMap<>();
     private final ArrayList<String[]> urlRules = new ArrayList<>();
-    private int freeSwipes;
+    private final HashMap<String, Integer> reelsAllowed = new HashMap<>();
+    private final HashMap<String, Long> waitMs = new HashMap<>();
     private boolean goHome;
     private boolean showToast;
     private long pausedUntil;
@@ -53,12 +64,16 @@ public final class BlockerService extends AccessibilityService
     // Per-foreground-app state.
     private String curPkg;
     private String zone;          // target key of the feed we are in, or null
-    private int swipes;
+    private int swipes;           // reels moved past in this visit
+    private long absentFirst;     // elapsedRealtime the feed was first seen missing, 0 = present
     private long lastScroll;
     private long lastCheck;
     private long lastAction;
-    private String lastBlocked;
     private String lastUrl;
+    /** pager node -> index of the reel it last settled on */
+    private final HashMap<Integer, Integer> pagerIndex = new HashMap<>();
+    /** target -> elapsedRealtime before which a new visit is blocked */
+    private final HashMap<String, Long> blockedUntil = new HashMap<>();
     private boolean checkPending;
 
     private final Runnable deferredCheck = new Runnable() {
@@ -66,6 +81,14 @@ public final class BlockerService extends AccessibilityService
         public void run() {
             checkPending = false;
             if (curPkg != null) check(curPkg);
+        }
+    };
+
+    /** Confirms a visit really ended, in case no further events arrive. */
+    private final Runnable absenceCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (curPkg != null && absentFirst != 0) check(curPkg);
         }
     };
 
@@ -132,7 +155,19 @@ public final class BlockerService extends AccessibilityService
             }
         }
 
-        freeSwipes = prefs.getInt(Prefs.FREE_SWIPES, 0);
+        reelsAllowed.clear();
+        waitMs.clear();
+        for (String t : rules.targets.keySet()) {
+            reelsAllowed.put(t, Prefs.reels(prefs, t));
+            waitMs.put(t, Prefs.waitSeconds(prefs, t) * 1000L);
+        }
+        // A shorter wait set in the UI applies to a wait already running.
+        long t = SystemClock.elapsedRealtime();
+        for (String k : new ArrayList<>(blockedUntil.keySet())) {
+            Long w = waitMs.get(k);
+            long cap = t + Math.max(w != null ? w : 0, REBLOCK_WINDOW_MS);
+            if (blockedUntil.get(k) > cap) blockedUntil.put(k, cap);
+        }
         goHome = prefs.getBoolean(Prefs.GO_HOME, false);
         showToast = prefs.getBoolean(Prefs.TOAST, true);
         pausedUntil = prefs.getLong(Prefs.PAUSED_UNTIL, 0);
@@ -165,12 +200,7 @@ public final class BlockerService extends AccessibilityService
         boolean urgent = type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
 
         if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && zone != null && appRules.containsKey(pkg)) {
-            // A single swipe produces a burst of scroll events; count bursts.
-            if (now - lastScroll > SWIPE_GAP_MS) {
-                swipes++;
-                urgent = true;
-            }
-            lastScroll = now;
+            urgent |= onScroll(e, now);
         }
 
         if (urgent || now - lastCheck >= CHECK_INTERVAL_MS) {
@@ -185,10 +215,41 @@ public final class BlockerService extends AccessibilityService
         }
     }
 
+    /**
+     * Counts moving to another reel: the first visible item of a reel-sized
+     * scrolling view (at least 75% of the screen tall) changed. Comment lists
+     * and other smaller scrollers are ignored.
+     */
+    private boolean onScroll(AccessibilityEvent e, long now) {
+        AccessibilityNodeInfo src = e.getSource();
+        if (src == null) return false;
+        android.graphics.Rect r = new android.graphics.Rect();
+        src.getBoundsInScreen(r);
+        boolean reelSized = r.height() * 4 >= getResources().getDisplayMetrics().heightPixels * 3;
+        int key = src.hashCode();
+        recycle(src);
+        if (!reelSized) return false;
+
+        int from = e.getFromIndex();
+        if (from < 0) {
+            // No index info: count bursts of scrolling instead.
+            boolean counted = now - lastScroll > SWIPE_GAP_MS;
+            lastScroll = now;
+            if (counted) swipes++;
+            return counted;
+        }
+        Integer prev = pagerIndex.put(key, from);
+        if (prev == null || prev == from) return false;
+        swipes++;
+        return true;
+    }
+
     private void resetZone() {
         zone = null;
         swipes = 0;
         lastUrl = null;
+        absentFirst = 0;
+        pagerIndex.clear();
     }
 
     private void check(String pkg) {
@@ -218,18 +279,40 @@ public final class BlockerService extends AccessibilityService
         }
         recycle(root);
 
+        long t = SystemClock.elapsedRealtime();
         if (target == null) {
-            if (zone != null) resetZone();
+            if (zone != null) {
+                if (absentFirst == 0) {
+                    absentFirst = t;
+                    handler.removeCallbacks(absenceCheck);
+                    handler.postDelayed(absenceCheck, VISIT_END_MS + 50);
+                } else if (t - absentFirst >= VISIT_END_MS) resetZone();
+            }
             return;
         }
+        absentFirst = 0;
         if (!target.equals(zone)) {
+            // A new visit.
+            Long until = blockedUntil.get(target);
+            if (until != null && t < until) {
+                block(target, until - t);
+                return;
+            }
             zone = target;
             swipes = 0;
+            pagerIndex.clear();
         }
-        if (freeSwipes == 0 || swipes > freeSwipes
-                || (target.equals(lastBlocked) && now - lastAction < REBLOCK_WINDOW_MS)) {
-            block(target);
+        Integer allowed = reelsAllowed.get(target);
+        if (allowed == null || allowed == 0 || swipes >= allowed) {
+            Long w = waitMs.get(target);
+            long wait = w != null ? w : 0;
+            blockedUntil.put(target, t + Math.max(wait, REBLOCK_WINDOW_MS));
+            block(target, wait);
+            return;
         }
+        // Still within the limit: the wait counts from the last moment on the feed.
+        Long w = waitMs.get(target);
+        if (w != null && w > 0) blockedUntil.put(target, t + w);
     }
 
     private String matchApp(AccessibilityNodeInfo root, Rules.AppRule[] list) {
@@ -307,14 +390,18 @@ public final class BlockerService extends AccessibilityService
         return a != null && a.length() == b.length() && a.toString().equalsIgnoreCase(b);
     }
 
-    private void block(String target) {
+    /** @param waitLeftMs how long until this feed opens again, for the message */
+    private void block(String target, long waitLeftMs) {
         lastAction = SystemClock.uptimeMillis();
-        lastBlocked = target;
         resetZone();
         performGlobalAction(goHome ? GLOBAL_ACTION_HOME : GLOBAL_ACTION_BACK);
         if (showToast) {
             String name = rules.targets.get(target);
-            Toast.makeText(this, (name != null ? name : target) + " blocked", Toast.LENGTH_SHORT).show();
+            if (name == null) name = target;
+            String msg = waitLeftMs >= 1000
+                    ? name + ": next one in " + Prefs.duration((waitLeftMs + 999) / 1000)
+                    : name + " blocked";
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
         }
         int day = Prefs.today();
         int count = prefs.getInt(Prefs.STATS_DAY, -1) == day ? prefs.getInt(Prefs.STATS_COUNT, 0) : 0;

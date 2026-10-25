@@ -30,8 +30,16 @@ When a feed opens it presses Back (or Home) for you.
 ## Settings
 
 - **Block**: per feed, choose whether to block it in the app, in browsers, or both.
-- **Free swipes before blocking**: 0 blocks as soon as a feed opens. N lets you swipe N times, then
-  blocks. Leaving the feed resets the count.
+- **Limit** (set separately for each feed; tap the "Limit" line under it):
+  - *Reels per visit*: 0 blocks as soon as a reel opens. 1 lets you watch the reel you opened for as
+    long as you like, and swiping to another one blocks it. N allows N reels.
+  - *Wait after a visit*: when a visit ends (blocked, or you leave the feed), new reels stay blocked
+    for this long: 30 s up to 4 h. The wait is kept per feed, so it applies in the app and in
+    browsers alike.
+  - Presets: *Block*, *1 reel / 1 min*, *3 reels / 10 min*.
+
+  A swipe counts when the full-screen reel player moves to a different reel, so scrolling comments
+  doesn't count. Wait timers are kept in memory: if Android restarts the service, they reset.
 - **When blocked**: go back, or go to the home screen.
 - **Pause for 15 minutes**.
 - **Blocked today** counter.
@@ -50,7 +58,8 @@ Rule format (the defaults are in `Rules.java` and documented at the top of the e
 ```
 target yt YouTube Shorts
 app yt com.google.android.youtube id:reel_recycler           # visible view with this id
-app fb com.facebook.katana text:Reels & text:Create          # all matchers on a line must match
+app fb com.facebook.katana text:Reel details                 # visible text/description equals this
+app yt com.example id:a & text:B                             # all matchers on a line must match
 url yt youtube.com/shorts                                    # browser URL contains this
 browser com.brave.browser url_bar                            # browser package + URL bar view id
 ```
@@ -60,8 +69,9 @@ You can add your own targets, for example TikTok (`target tt TikTok`, `app tt co
 
 ## Known limits
 
-- **Facebook** builds most of its UI without resource ids, so the default FB rule is a text heuristic.
-  It's the most likely to need tuning with the capture tool.
+- **Facebook** hides its view ids, so its rules match accessibility labels ("Reels tab details",
+  "Reel details"). These were checked against the Facebook app in October 2026, but not Facebook Lite.
+  Labels can change with app updates or differ by phone language.
 - **Browsers** are detected from the URL bar text. If a browser shows only the domain and hides the
   path, it can't tell Shorts apart from the rest of YouTube. Current Chrome and Brave show the path, but check on your device.
 - Detection runs in steps of a few hundred ms, so a feed can be on screen for a moment before it closes.

@@ -6,8 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PKG=dev.scrollblock
-VERSION_CODE=1
-VERSION_NAME=1.0
+VERSION_CODE=2
+VERSION_NAME=1.1
 ANDROID_JAR=${ANDROID_JAR:-$HOME/.android-sdk/platforms/android-33/android.jar}
 KEYSTORE=${KEYSTORE:-signing/scrollblock.jks}
 KS_PASS=${KS_PASS:?set KS_PASS to the keystore password}

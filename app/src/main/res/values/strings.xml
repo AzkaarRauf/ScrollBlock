@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ScrollBlock</string>
+    <string name="service_description">Detects short-video feeds (YouTube Shorts, Instagram Reels, Facebook Reels) in apps and browsers and backs out of them. Only the enabled apps are observed. Nothing leaves your device; the app has no internet permission.</string>
+</resources>

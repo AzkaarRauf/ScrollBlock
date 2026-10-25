@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Static defaults only. At runtime BlockerService narrows packageNames to the
+  apps/browsers that are actually enabled, so the system never even delivers
+  events from any other app.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="false"
+    android:notificationTimeout="150"
+    android:packageNames="dev.scrollblock"
+    android:description="@string/service_description" />

@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'dev.scrollblock'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'dev.scrollblock'
+        minSdk 21
+        targetSdk 33
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // Signing details stay out of git. Put them in ~/.gradle/gradle.properties or
+    // local.properties-style -P flags:
+    //   scrollblock.keystore=/path/to/scrollblock.jks
+    //   scrollblock.password=...
+    // Without them, release builds fall back to the debug key.
+    def ks = findProperty('scrollblock.keystore')
+    signingConfigs {
+        release {
+            if (ks) {
+                storeFile file(ks)
+                storePassword findProperty('scrollblock.password')
+                keyAlias 'scrollblock'
+                keyPassword findProperty('scrollblock.password')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+            signingConfig ks ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        buildConfig false
+    }
+}
+
+// Deliberately no dependencies: framework APIs only.
